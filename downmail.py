@@ -61,23 +61,23 @@
 #-----------------------------------------------------------------------------#
 
 __all__ = [
-    
+
     # Main class
     'Main',
-    
+
     # Worker classes
     'MailDownloader',
     'POP3Downloader',
     'IMAPDownloader',
-    
+
     # Database access classes
     'Database',
     'MailDao',
-    
+
     # Helper classes
     'AutoCloseable',
     'Target',
-    
+
     ]
 
 import os
@@ -112,22 +112,22 @@ except ImportError:
 ###############################################################################
 
 class AutoCloseable(object):
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, type, value, traceback):
         try:
             self.close()
         except Exception:
             pass
-    
+
     def __del__(self):
         try:
             self.close()
         except Exception:
             pass
-    
+
     def close(self):
         raise NotImplementedError
 
@@ -245,7 +245,7 @@ class IMAPDownloader(MailDownloader):
 
     def get_list(self, mailbox=None):
         if mailbox:
-            typ, data = self.__imap.select(mailbox)
+            typ, data = self.__imap.select(mailbox, readonly=True)
             if typ != 'OK':
                 raise self.__imap.error("Mailbox not found: %r" % mailbox)
         typ, data = self.__imap.search(None, 'ALL')
@@ -267,23 +267,23 @@ class IMAPDownloader(MailDownloader):
 ###############################################################################
 
 class Database(AutoCloseable):
-    
+
     def __init__(self, dbfile):
         self.dbfile = dbfile
         self.db = None
         self.open()
-    
+
     def open(self):
         self.close()
         self.db = sqlite3.connect(self.dbfile)
-    
+
     def close(self):
         if self.db is not None:
             self.db.close()
             self.db = None
 
 class MailDAO(object):
-    
+
     class __Query(object):
         init_script = """
 
@@ -320,26 +320,26 @@ CREATE TABLE IF NOT EXISTS mail (
         ON DELETE CASCADE
 );
         """
-        
+
         vacuum = "VACUUM;"
         integrity_check = "PRAGMA integrity_check;"
         quick_check = "PRAGMA quick_check;"
-        
+
         add_host = "INSERT INTO host VALUES (NULL, ?, ?, ?, ?);"
         get_host_id = """
             SELECT id FROM host
             WHERE proto = ? AND user = ? AND host = ? AND port = ?;
             """
-        
+
         add_mailbox = "INSERT INTO mailbox VALUES (NULL, ?);"
         get_mailbox_id = "SELECT id FROM mailbox WHERE name = ?;"
-        
+
         add_mail = "INSERT INTO mail VALUES (NULL, ?, ?, ?, ?);"
         get_mail_id = """
             SELECT id FROM mail
             WHERE host = ? AND mailbox = ? AND idx = ? AND file = ?;
             """
-        
+
         get_mail = """
             SELECT host.proto, host.user, host.host, host.port,
                    mailbox.name,
@@ -349,14 +349,14 @@ CREATE TABLE IF NOT EXISTS mail (
                   mail.mailbox = mailbox.id AND
                   mail.id = ?;
         """
-        
+
         del_mail = "DELETE FROM mail WHERE id = ?;"
-        
+
         get_indexes = """
             SELECT idx FROM mail
             WHERE host = ? AND mailbox = ?;
         """
-        
+
         list_all_mails = """
             SELECT mail.id,
                    host.proto, host.user, host.host, host.port,
@@ -366,12 +366,12 @@ CREATE TABLE IF NOT EXISTS mail (
             WHERE mail.host = host.id AND mail.mailbox = mailbox.id
             ORDER BY host.host, host.user, mailbox.name, mail.idx;
         """
-    
+
     def __init__(self, db):
         self._db = db
         self._db.executescript(self.__Query.init_script)
         self._db.commit()
-    
+
     def get_indexes(self, target):
         indexes = []
         id_host = self.__get_host_id(target.proto, target.user,
@@ -383,7 +383,7 @@ CREATE TABLE IF NOT EXISTS mail (
                 id_mailbox = self.__get_mailbox_id(target.mailbox)
             indexes = self.__get_indexes(id_host, id_mailbox)
         return indexes
-    
+
     @staticmethod
     def __fetch_one_value(cursor):
         try:
@@ -392,7 +392,7 @@ CREATE TABLE IF NOT EXISTS mail (
             return None
         except TypeError:
             return None
-    
+
     def __get_indexes(self, id_host, id_mailbox):
         cursor = self._db.cursor()
         cursor.execute(self.__Query.get_indexes, (id_host, id_mailbox,))
@@ -402,17 +402,17 @@ CREATE TABLE IF NOT EXISTS mail (
         else:
             indexes = []
         return indexes
-    
+
     def __get_host_id(self, proto, user, host, port):
         cursor = self._db.cursor()
         cursor.execute(self.__Query.get_host_id, (proto, user, host, port))
         return self.__fetch_one_value(cursor)
-    
+
     def __get_mailbox_id(self, mailbox):
         cursor = self._db.cursor()
         cursor.execute(self.__Query.get_mailbox_id, (mailbox,))
         return self.__fetch_one_value(cursor)
-    
+
     def add(self, target, index, filename):
         cursor = self._db.cursor()
         try:
@@ -426,7 +426,7 @@ CREATE TABLE IF NOT EXISTS mail (
         except:
             self._db.rollback()
             raise
-    
+
     def __add_host(self, cursor, proto, user, host, port):
         args = (proto, user, host, port)
         cursor.execute(self.__Query.get_host_id, args)
@@ -435,7 +435,7 @@ CREATE TABLE IF NOT EXISTS mail (
             return id
         cursor.execute(self.__Query.add_host, args)
         return cursor.lastrowid
-    
+
     def __add_mailbox(self, cursor, mailbox):
         cursor.execute(self.__Query.get_mailbox_id, (mailbox,))
         id = self.__fetch_one_value(cursor)
@@ -443,7 +443,7 @@ CREATE TABLE IF NOT EXISTS mail (
             return id
         cursor.execute(self.__Query.add_mailbox, (mailbox,))
         return cursor.lastrowid
-    
+
     def __add_mail(self, cursor, id_host, id_mailbox, index, filename):
         args = (id_host, id_mailbox, index, filename)
         cursor.execute(self.__Query.get_mail_id, args)
@@ -452,12 +452,12 @@ CREATE TABLE IF NOT EXISTS mail (
             return id
         cursor.execute(self.__Query.add_mail, args)
         return cursor.lastrowid
-    
+
     def items(self):
         cursor = self._db.cursor()
         cursor.execute(self.__Query.list_all_mails)
         return cursor.fetchall()
-    
+
     def __iter__(self):
         cursor = self._db.cursor()
         cursor.execute(self.__Query.list_all_mails)
@@ -467,12 +467,12 @@ CREATE TABLE IF NOT EXISTS mail (
                 yield row
             else:
                 break
-    
+
     def get(self, id):
         cursor = self._db.cursor()
         cursor.execute(self.__Query.get_mail, (id,))
         return cursor.fetchone()
-    
+
     def delete(self, id):
         try:
             self._db.execute(self.__Query.del_mail, (id,))
@@ -480,7 +480,7 @@ CREATE TABLE IF NOT EXISTS mail (
         except:
             self._db.rollback()
             raise
-    
+
     def vacuum(self):
         try:
             self._db.execute(self.__Query.vacuum, ())
@@ -507,7 +507,7 @@ class Target(object):
         self.host     = host
         self.port     = port
         self.mailbox  = mailbox
-    
+
     def __str__(self):
         if self.password:
             netloc = '%s:%s@%s:%s' % (
@@ -531,7 +531,7 @@ class Target(object):
             ''
         )
         return urlparse.urlunparse(data)
-    
+
     def __repr__(self):
         msg = \
          '<%s at 0x%x: proto %r, user %r, pass %r, host %r, port %r, mailbox %r>'
@@ -544,7 +544,7 @@ class Target(object):
             self.port,
             self.mailbox
             )
-    
+
     def toTuple(self):
         return (
             self.proto,
@@ -554,32 +554,32 @@ class Target(object):
             self.port,
             self.mailbox
             )
-    
+
     def __eq__(self, other):
         return self.toTuple() == other.toTuple()
-    
+
     def __ne__(self, other):
         return not self == other
-    
+
     def __gt__(self, other):
         return NotImplemented
-    
+
     def __lt__(self, other):
         return NotImplemented
-    
+
     def __ge__(self, other):
         #if self == other:
         #    return True
         return NotImplemented
-    
+
     def __le__(self, other):
         #if self == other:
         #    return True
         return NotImplemented
-    
+
     def __hash__(self):
         return hash(self.toTuple())
-    
+
     @classmethod
     def parse(cls, token):
         if '://' not in token: # urllib can't handle a missing scheme
@@ -631,35 +631,35 @@ class Target(object):
         return Target(proto, user, password, host, port, mailbox)
 
 class Main(object):
-        
+
     # Characters not allowed in filenames
     _invalid_chars = '\\/:*?"<>|'
-    
+
     # Safe character to replace invalid characters with
     _safe_char = '_'
-    
+
     def run(self, argv=None):
         if argv is None:
             argv = sys.argv
         (parser, options, targets) = self._parse(argv)
-        
+
         try:
             os.makedirs(options.repository)
         except OSError:
             pass
         if not os.path.isdir(options.repository):
             parser.error("No such directory: %s" % options.repository)
-        
+
         dbfile = os.path.join(options.repository, 'sqlite.db')
         #try:
         #    open(dbfile, 'wb').close()  # "touch"
         #except Exception:
         #    parser.error("Can't access file: %s" % dbfile)
-        
+
         if options.timeout is not None:
             prev_timeout = socket.getdefaulttimeout()
             socket.setdefaulttimeout(options.timeout)
-        
+
         with Database(dbfile) as db:
             dao = MailDAO(db.db)
             try:
@@ -671,21 +671,21 @@ class Main(object):
                     self.download(targets, dao, options)
             finally:
                 dao.vacuum()
-        
+
         if options.timeout is not None:
             socket.setdefaulttimeout(prev_timeout)
-    
+
     def list(self, dao, options):
         for id, proto, user, host, port, mailbox, index, filename in dao:
             self._print(proto, user, host, port, mailbox, index, filename)
-    
+
     def _print(self, proto, user, host, port, mailbox, index, filename):
         target = Target(proto, user, None, host, port, mailbox)
         print
         print "URL:\t%s" % target
         print "Index:\t%d" % index
         print "File:\t%s\n" % filename
-    
+
     def cleanup(self, dao, options):
         items = dao.items()
         for id, proto, user, host, port, mailbox, index, filename in items:
@@ -694,7 +694,7 @@ class Main(object):
                     self._print(
                             proto, user, host, port, mailbox, index, filename)
                 dao.delete(id)
-    
+
     def download(self, targets, dao, options):
         while targets:
             target = targets.pop()
@@ -704,7 +704,7 @@ class Main(object):
                 with self._get_downloader(target, options) as downloader:
                     self._login(downloader, target, options)
                     while 1:
-                        
+
                         if target.mailbox is not None:
                             list_of_mailboxes = [target.mailbox]
                         else:
@@ -716,15 +716,15 @@ class Main(object):
                                         print "\t%s" % mailbox
                             except NotImplementedError:
                                 list_of_mailboxes = [None]
-                        
+
                         for target.mailbox in list_of_mailboxes:
                             try:
                                 self._download_mailbox(downloader, target, dao, options)
                             except Exception, e:
                                 #raise                                           # XXX DEBUG
-                                msg = "Error downloading mailbox %s: %s\n" % (mailbox, e)
+                                msg = "Error downloading mailbox %s: %s\n" % (target.mailbox, e)
                                 sys.stderr.write(msg)
-                        
+
                         if targets:
                             next = targets[0]
                             if  (
@@ -740,12 +740,12 @@ class Main(object):
                                 target = next
                                 continue
                         break
-                    
+
             except Exception, e:
                 #raise                                                           # XXX DEBUG
                 msg = "Error processing target %s: %s\n" % (target, str(e))
                 sys.stderr.write(msg)
-    
+
     def _download_mailbox(self, downloader, target, dao, options):
             if options.verbose:
                 if target.mailbox is None:
@@ -771,7 +771,7 @@ class Main(object):
                 self._save(filename, data)
                 del data
                 dao.add(target, index, filename)
-    
+
     @staticmethod
     def _get_downloader(target, options):
         debuglevel = options.debug
@@ -791,7 +791,7 @@ class Main(object):
         else:
             raise AssertionError("Unknown protocol: %r" % proto)
         return downloader
-    
+
     @staticmethod
     def _login(downloader, target, cache=True):
         password = target.password
@@ -804,7 +804,7 @@ class Main(object):
         downloader.login(target.user, password)
         if cache:
             target.password = password
-    
+
     @staticmethod
     def _get_list(downloader, target, dao, verbose):
         server_indexes = set(downloader.get_list(target.mailbox))
@@ -818,7 +818,7 @@ class Main(object):
             msg = "Found %d new emails (from a total of %d)"
             print msg % (len(indexes), total_count)
         return indexes
-    
+
     @classmethod
     def _calc_filename(cls, target, index):
         host = cls._sanitize(target.host)
@@ -833,7 +833,7 @@ class Main(object):
         else:
             items = (host, slash, user, slash, index, dot, ext)
         return ''.join(items)
-    
+
     @classmethod
     def _sanitize(cls, name):
         if name:
@@ -843,7 +843,7 @@ class Main(object):
             if name.strip() != name:
                 name = urllib.quote(name)
         return name
-    
+
     def _save(self, filename, data):
         index = 0
         path, name = os.path.split(filename)
@@ -866,7 +866,7 @@ class Main(object):
             if must_delete:
                 os.unlink(filename)
         return filename
-    
+
     # Create a file if and only if it didn't exist previously
     def _create_file_exclusive(self, filename, silent=True):
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -890,21 +890,21 @@ class Main(object):
                 finally:
                     os.unlink(filename)
             raise
-    
+
     @staticmethod
     def _parse(argv):
         basedir = os.path.dirname(os.path.abspath(__file__))
         if not basedir:
             basedir = os.path.abspath(os.path.curdir)
-        
+
         #name = os.path.split(os.path.basename(__file__))[0]
         #defconf = os.path.join(basedir, '%s.conf' % name)
-        
+
         usage = "%prog [options] [servers...]"
         epilog = """Servers are specified in URL format:
-    
+
     proto://user:pass@host:port/mailbox
-    
+
 Where all components are optional. Only the IMAP protocol supports mailboxes.
 The default protocol is IMAP over SSL. The default username is the current
 user and the default host is localhost. If no mailbox is specified for IMAP,
@@ -912,7 +912,7 @@ all mails in all mailboxes will be downloaded.
 
 Be careful when enabling the debug log, passwords will be shown on screen!
 """
-        
+
         parser = optparse.OptionParser(usage=usage, epilog=epilog)
         parser.add_option("-l", "--list", action="store_true",
                           help="list all downloaded mails and quit")
@@ -933,36 +933,36 @@ Be careful when enabling the debug log, passwords will be shown on screen!
         parser.add_option("-q", "--quiet", dest="verbose", action="store_false",
                           help="quiet mode")
         (options, args) = parser.parse_args()
-        
+
         if options.list and options.cleanup:
             parser.error("can't use --list and --cleanup at the same time")
-        
+
         #if options.list and options.config:
         #    parser.error("can't use --list and --config at the same time")
-        
+
         #if options.cleanup and options.config:
         #    parser.error("can't use --cleanup and --config at the same time")
-        
+
         if options.list and args:
             parser.error("can't use --list and a list of servers at the same time")
-        
+
         if options.cleanup and args:
             parser.error("can't use --cleanup and a list of servers at the same time")
-        
+
         #if options.config and args:
         #    parser.error("can't use --config and a list of servers at the same time")
-        
+
         if not options.repository:
             options.repository = basedir
-        
+
         #if not args and not options.config:
         #    options.config = defconfig
         #    if not os.path.exists(options.config):
         #        parser.error("no targets")
-        
+
         if not args and not options.list and not options.cleanup:
             parser.parse_args(['--help'])
-        
+
         targets = set()
         for token in args:
             try:
@@ -975,7 +975,7 @@ Be careful when enabling the debug log, passwords will be shown on screen!
                 parser.error(e.msg)
             except Exception:
                 parser.error("Error parsing token: %s" % token)
-        
+
         return (parser, options, sorted(targets, key=lambda t: t.host))
 
 ###############################################################################
