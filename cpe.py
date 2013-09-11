@@ -29,8 +29,9 @@
 
 import re
 
+from time import gmtime, asctime
 from os import unlink
-from os.path import exists
+from os.path import exists, getmtime
 from threading import RLock
 from urllib import quote, unquote
 
@@ -39,7 +40,6 @@ sqlite3 = None
 urllib2 = None
 shutil  = None
 etree   = None
-
 
 def get_cpe_version(cpe):
     if not isinstance(cpe, basestring):
@@ -111,7 +111,6 @@ def iter_transactional(fn):
         return self._iter_transaction(fn, args, kwargs)
     return wrapper
 
-
 class CPEDB(object):
     """
     Translates between CPE 2.2 and CPE 2.3 names, and looks up user-friendly
@@ -121,8 +120,17 @@ class CPEDB(object):
     original XML file mantained by NIST: https://nvd.nist.gov/cpe.cfm
     """
 
+    DEFAULT_DB_FILE = "official-cpe-dictionary_v2.3.db"
+    XML_FILE = "official-cpe-dictionary_v2.3.xml"
+    DOWNLOAD_URL = (
+        "http://static.nvd.nist.gov/feeds/xml/cpe/dictionary/" + XML_FILE
+    )
 
-    def __init__(self, db_file = "official-cpe-dictionary_v2.3.db"):
+    def __init__(self, db_file = None):
+
+        # If no filename is given, use the default.
+        if not db_file:
+            db_file = self.DEFAULT_DB_FILE
 
         # Create the lock to make this class thread safe.
         self.__lock = RLock()
@@ -142,13 +150,14 @@ class CPEDB(object):
         # Initialize the database if needed.
         # On error close the database and raise an exception.
         try:
-            self.__initialize()
+            is_empty = self.__initialize()
+            if is_empty:
+                self.update(force = True)
         except:
             self.close()
             if is_new:
                 unlink(db_file)
             raise
-
 
     def close(self):
         try:
@@ -156,7 +165,7 @@ class CPEDB(object):
         finally:
             self.__db     = None
             self.__cursor = None
-
+            self.__lock   = None
 
     def __enter__(self):
         return self
@@ -166,7 +175,6 @@ class CPEDB(object):
             self.close()
         except Exception:
             pass
-
 
     def _transaction(self, fn, args, kwargs):
         with self.__lock:
@@ -204,45 +212,16 @@ class CPEDB(object):
                 self.__cursor = None
                 self.__busy   = False
 
-
     @transactional
     def __initialize(self):
 
-        # If the file already contains the NIST CPE dictionary, do nothing.
+        # If the file already contains the schema, do nothing.
         self.__cursor.execute(
             "SELECT count(*) FROM sqlite_master"
             " WHERE type = 'table' AND name = 'cpe';"
         )
         if self.__cursor.fetchone()[0]:
-            return
-
-        # If the XML file from NIST is there, parse it.
-        # On error, download the file and try again.
-        xml_file = "official-cpe-dictionary_v2.3.xml"
-        global etree
-        if etree is None:
-            try:
-                from xml.etree import cElementTree as etree
-            except ImportError:
-                from xml.etree import ElementTree as etree
-        try:
-            tree = etree.parse(xml_file)
-            root = tree.getroot()
-        except Exception:
-            global urllib2
-            if urllib2 is None:
-                import urllib2
-            global shutil
-            if shutil is None:
-                import shutil
-            src = urllib2.urlopen(
-                "http://static.nvd.nist.gov/feeds/xml/cpe/dictionary/"
-                + xml_file
-            )
-            with open(xml_file, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            tree = etree.parse(xml_file)
-            root = tree.getroot()
+            return False
 
         # Create the database schema.
         self.__cursor.executescript(
@@ -280,34 +259,103 @@ class CPEDB(object):
             CREATE INDEX `cpe_other` ON `cpe`(`other`);
             """
         )
+        return True
 
-        # Parse the XML file and store the data into the database.
-        prefix20 = "{http://cpe.mitre.org/dictionary/2.0}"
-        prefix23 = "{http://scap.nist.gov/schema/cpe-extension/2.3}"
-        prefixns = "{http://www.w3.org/XML/1998/namespace}"
-        for item in root.iter(prefix20 + "cpe-item"):
-            name22 = item.attrib["name"]
-            name23 = item.find(".//%scpe23-item" % prefix23).attrib["name"]
-            deprecated = int(item.attrib.get("deprecated", "false") == "true")
-            titles = {
-                t.attrib[prefixns + "lang"]: t.text
-                for t in item.iter(prefix20 + "title")
-            }
+    @transactional
+    def update(self, force = False):
+        """
+        Update the database.
+
+        This downloads a newer XML file from NIST if available,
+        and recreates the database from it.
+
+        :param force: True to force the update, False to only
+            load the data from NIST if outdated.
+        :type force: bool
+        """
+
+        # Lazy imports.
+        global etree
+        if etree is None:
             try:
-                title = titles["en-US"]
-            except KeyError:
-                found = False
-                for lang, title in sorted(titles.items()):
-                    if lang.startswith("en-"):
-                        found = True
-                        break
-                if not found:
-                    title = titles[sorted(titles.keys())[0]]
-            self.__cursor.execute(
-                "INSERT INTO `cpe` VALUES "
-                "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                (name23, name22, title, deprecated) + tuple( parse_cpe(name23) )
-            )
+                from xml.etree import cElementTree as etree
+            except ImportError:
+                from xml.etree import ElementTree as etree
+        global urllib2
+        if urllib2 is None:
+            import urllib2
+        global shutil
+        if shutil is None:
+            import shutil
+
+        # If the XML file from NIST is missing, broken or older, download it.
+        xml_file = self.XML_FILE
+        tree = None
+        if not exists(xml_file):
+            src = urllib2.urlopen(self.DOWNLOAD_URL)
+        else:
+            try:
+                tree = etree.parse(xml_file)
+                src  = None
+            except Exception:
+                src = urllib2.urlopen(self.DOWNLOAD_URL)
+            else:
+                try:
+                    ims = asctime(gmtime(getmtime(xml_file)))
+                    req = urllib2.Request(self.DOWNLOAD_URL, headers = {
+                        "If-Modified-Since": ims
+                    })
+                    src = urllib2.urlopen(req)
+                except urllib2.HTTPError, e:
+                    if e.code != 304:
+                        raise
+                    src = None
+        if src is not None:
+            force = True
+            with open(xml_file, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+        # Do we have to reload the data?
+        if force:
+
+            # Open the XML file.
+            if tree is None:
+                tree = etree.parse(xml_file)
+            root = tree.getroot()
+
+            # Delete the old data.
+            self.__cursor.execute("DELETE FROM `cpe`;")
+
+            # Parse the XML file and store the data into the database.
+            prefix20 = "{http://cpe.mitre.org/dictionary/2.0}"
+            prefix23 = "{http://scap.nist.gov/schema/cpe-extension/2.3}"
+            prefixns = "{http://www.w3.org/XML/1998/namespace}"
+            for item in root.iter(prefix20 + "cpe-item"):
+                name22 = item.attrib["name"]
+                name23 = item.find(".//%scpe23-item" % prefix23).attrib["name"]
+                deprecated = int(
+                            item.attrib.get("deprecated", "false") == "true")
+                titles = {
+                    t.attrib[prefixns + "lang"]: t.text
+                    for t in item.iter(prefix20 + "title")
+                }
+                try:
+                    title = titles["en-US"]
+                except KeyError:
+                    found = False
+                    for lang, title in sorted(titles.items()):
+                        if lang.startswith("en-"):
+                            found = True
+                            break
+                    if not found:
+                        title = titles[sorted(titles.keys())[0]]
+                params = (name23, name22, title, deprecated)
+                params = params + tuple( parse_cpe(name23) )
+                self.__cursor.execute(
+                    "INSERT INTO `cpe` VALUES "
+                    "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    params
+                )
 
     @transactional
     def resolve(self, cpe, include_deprecated = True):
@@ -451,12 +499,28 @@ class CPEDB(object):
         self.__cursor.execute(query, params)
         return set(row[0] for row in self.__cursor.fetchall())
 
-
 if __name__ == "__main__":
     import sqlite3
     import urllib2
     import shutil
+    import sys
+    import platform
+
+    title = sys.platform
+    version = "*"
+    target_hw = "*"
+    if title == "win32":
+        title = "windows " + platform.win32_ver()[0]
+    elif title.startswith("linux"):
+        title, version = platform.linux_distribution()[:1]
+        #target_hw = platform.uname()[-1]
+    elif title == "mac":
+        title = "mac os x"
+        version = platform.mac_ver()[1]
+        #target_hw = platform.uname()[-1]
+
     with CPEDB() as db:
-        for cpe in db.search(title="windows", part="o"):
+        db.update()
+        for cpe in db.search(title=title, version=version, part="o", target_hw=target_hw):
             #print cpe
             print db.get_title(cpe)
