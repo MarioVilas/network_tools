@@ -211,7 +211,7 @@ class CPEDB(object):
         # If the file already contains the NIST CPE dictionary, do nothing.
         self.__cursor.execute(
             "SELECT count(*) FROM sqlite_master"
-            " WHERE type = 'view' AND name = 'cpe';"
+            " WHERE type = 'table' AND name = 'cpe';"
         )
         if self.__cursor.fetchone()[0]:
             return
@@ -247,10 +247,11 @@ class CPEDB(object):
         # Create the database schema.
         self.__cursor.executescript(
             """
-            CREATE TABLE `cpe_name` (
-                `id` INTEGER PRIMARY KEY,
+            CREATE TABLE `cpe` (
+                `rowid` INTEGER PRIMARY KEY,
                 `name23` STRING UNIQUE NOT NULL,
                 `name22` STRING NOT NULL,
+                `title` STRING NOT NULL,
                 `deprecated` INTEGER(1) NOT NULL DEFAULT 0,
                 `part` STRING NOT NULL DEFAULT '*',
                 `vendor` STRING NOT NULL DEFAULT '*',
@@ -264,20 +265,19 @@ class CPEDB(object):
                 `target_hw` STRING NOT NULL DEFAULT '*',
                 `other` STRING NOT NULL DEFAULT '*'
             );
-            CREATE INDEX `cpe_name22` ON `cpe_name`(`name22`);
-            CREATE TABLE `cpe_title` (
-                `id` INTEGER NOT NULL,
-                `lang` STRING NOT NULL,
-                `title` STRING NOT NULL,
-                FOREIGN KEY(`id`) REFERENCES `cpe_name`(`id`)
-            );
-            CREATE INDEX `cpe_title_lang` ON `cpe_title`(`lang`);
-            CREATE INDEX `cpe_title_title` ON `cpe_title`(`title`);
-            CREATE VIEW `cpe` AS
-                SELECT `cpe_name`.`name23`, `cpe_name`.`name22`,
-                       `cpe_title`.`lang`,  `cpe_title`.`title`
-                FROM `cpe_name`, `cpe_title`
-                WHERE `cpe_name`.`id` = `cpe_title`.`id`;
+            CREATE INDEX `cpe_name22` ON `cpe`(`name22`);
+            CREATE INDEX `cpe_title` ON `cpe`(`title`);
+            CREATE INDEX `cpe_part` ON `cpe`(`part`);
+            CREATE INDEX `cpe_vendor` ON `cpe`(`vendor`);
+            CREATE INDEX `cpe_product` ON `cpe`(`product`);
+            CREATE INDEX `cpe_version` ON `cpe`(`version`);
+            CREATE INDEX `cpe_update` ON `cpe`(`update`);
+            CREATE INDEX `cpe_edition` ON `cpe`(`edition`);
+            CREATE INDEX `cpe_language` ON `cpe`(`language`);
+            CREATE INDEX `cpe_sw_edition` ON `cpe`(`sw_edition`);
+            CREATE INDEX `cpe_target_sw` ON `cpe`(`target_sw`);
+            CREATE INDEX `cpe_target_hw` ON `cpe`(`target_hw`);
+            CREATE INDEX `cpe_other` ON `cpe`(`other`);
             """
         )
 
@@ -293,17 +293,21 @@ class CPEDB(object):
                 t.attrib[prefixns + "lang"]: t.text
                 for t in item.iter(prefix20 + "title")
             }
+            try:
+                title = titles["en-US"]
+            except KeyError:
+                found = False
+                for lang, title in sorted(titles.items()):
+                    if lang.startswith("en-"):
+                        found = True
+                        break
+                if not found:
+                    title = titles[sorted(titles.keys())[0]]
             self.__cursor.execute(
-                "INSERT INTO `cpe_name` VALUES "
-                "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                (name23, name22, deprecated) + tuple( parse_cpe(name23) )
+                "INSERT INTO `cpe` VALUES "
+                "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (name23, name22, title, deprecated) + tuple( parse_cpe(name23) )
             )
-            rowid = self.__cursor.lastrowid
-            for lang, title in sorted(titles.items()):
-                self.__cursor.execute(
-                    "INSERT INTO `cpe_title` VALUES (?, ?, ?);",
-                    (rowid, lang, title)
-                )
 
     @transactional
     def resolve(self, cpe, include_deprecated = True):
@@ -336,7 +340,7 @@ class CPEDB(object):
                 "target_sw", "target_hw", "other"
             ])
 
-        query = "SELECT `name%s` FROM `cpe_name` WHERE " % ver
+        query = "SELECT `name%s` FROM `cpe` WHERE " % ver
         if not include_deprecated:
             query += "`deprecated` = 0 AND "
         query += "(`name%s` = ?" % ver
@@ -351,22 +355,18 @@ class CPEDB(object):
         return set(row[0] for row in self.__cursor.fetchall())
 
     @transactional
-    def get_title(self, cpe, lang = "en-US"):
+    def get_title(self, cpe):
         """
         Get the user-friendly title of a CPE name.
 
         :param CPE: CPE name.
         :type CPE: str | unicode
-
-        :param lang: Language.
-        :type lang: str
         """
         ver = get_cpe_version(cpe).replace(".", "")
         query = (
-            "SELECT `title` FROM `cpe`"
-            " WHERE `name%s` = ? AND `lang` = ? LIMIT 1;"
+            "SELECT `title` FROM `cpe` WHERE `name%s` = ? LIMIT 1;"
         ) % ver
-        self.__cursor.execute(query, (cpe, lang))
+        self.__cursor.execute(query, (cpe,))
         row = self.__cursor.fetchone()
         if not row:
             raise KeyError("CPE name not found: %s" % cpe)
@@ -378,62 +378,66 @@ class CPEDB(object):
         Search the CPE database for the requested fields.
         The value '*' is assumed for missing fields.
 
+        :keyword title: User-friendly product name.
+        :type title: str | unicode
+
         :keyword part: CPE class. Use "a" for applications,
             "o" for operating systems or "h" for hardware devices.
-        :type part: str
+        :type part: str | unicode
 
         :keyword vendor: Person or organization that manufactured or
             created the product.
-        :type vendor: str
+        :type vendor: str | unicode
 
         :keyword product: The most common and recognizable title or name
             of the product.
-        :type product: str
+        :type product: str | unicode
 
         :keyword version: Vendor-specific alphanumeric strings
             characterizing the particular release version of the product.
-        :type version: str
+        :type version: str | unicode
 
         :keyword update: Vendor-specific alphanumeric strings
             characterizing the particular update, service pack, or point
             release of the product.
-        :type update: str
+        :type update: str | unicode
 
         :keyword edition: Legacy 'edition' attribute from CPE 2.2.
-        :type edition: str
+        :type edition: str | unicode
 
         :keyword language: Language tag for the language supported in the user
             interface of the product.
-        :type language: str
+        :type language: str | unicode
 
         :keyword sw_edition: Characterizes how the product is tailored to a
             particular market or class of end users.
-        :type sw_edition: str
+        :type sw_edition: str | unicode
 
         :keyword target_sw: Software computing environment within which the
             product operates.
-        :type target_sw: str
+        :type target_sw: str | unicode
 
         :keyword target_hw: Instruction set architecture (e.g., x86) on which
             the product operates.
-        :type target_hw: str
+        :type target_hw: str | unicode
 
         :keyword other: Any other general descriptive or identifying
             information which is vendor- or product-specific and which
             does not logically fit in any other attribute value.
-        :type other: str
+        :type other: str | unicode
 
         :returns: Set of matching CPE names.
         :rtype: set(str|unicode)
         """
         columns = [
+            "title",
             "part", "vendor", "product", "version", "update", "edition",
             "language", "sw_edition", "target_sw", "target_hw", "other"
         ]
         if set(kwargs).difference(columns):
             raise TypeError("Unknown keyword arguments: %s"
                     % ", " % sorted(set(kwargs).difference(columns)) )
-        query = "SELECT `name23` FROM `cpe_name` WHERE "
+        query = "SELECT `name23` FROM `cpe` WHERE "
         query += " AND ".join(
             "`%s` LIKE ?" % field
             for field in columns
@@ -453,6 +457,6 @@ if __name__ == "__main__":
     import urllib2
     import shutil
     with CPEDB() as db:
-        for cpe in db.search(product="linux", part="o"):
-            print cpe
+        for cpe in db.search(title="windows", part="o"):
+            #print cpe
             print db.get_title(cpe)
