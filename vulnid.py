@@ -133,7 +133,6 @@ class VulnerabilityDB(object):
     SCHEMA = \
     """
     PRAGMA foreign_keys = ON;
-    PRAGMA application_id = 1447642178;
 
     ---------------------
     -- File timestamps --
