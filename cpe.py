@@ -301,7 +301,9 @@ class CPEDB(object):
                 src = urllib2.urlopen(self.DOWNLOAD_URL)
             else:
                 try:
-                    ims = asctime(gmtime(getmtime(xml_file)))
+                    ftm = getmtime(xml_file)
+                    ftm -= 3600 # -1 minute to compensate timing errors
+                    ims = asctime(gmtime(ftm))
                     req = urllib2.Request(self.DOWNLOAD_URL, headers = {
                         "If-Modified-Since": ims
                     })
