@@ -60,7 +60,7 @@ def cpe22_unquote(s):
         return s
     r = []
     i = -1
-    while i < len(s):
+    while i < len(s) - 1:
         i += 1
         c = s[i]
         if c == "\\":
@@ -152,10 +152,10 @@ class VulnerabilityDB(object):
 
     CREATE TABLE IF NOT EXISTS `cpe` (
         `rowid` INTEGER PRIMARY KEY,
-        `name23` STRING UNIQUE NOT NULL,
+        `name23` STRING NOT NULL UNIQUE ON CONFLICT REPLACE,
         `name22` STRING NOT NULL,
-        `title` STRING NOT NULL,
-        `deprecated` INTEGER(1) NOT NULL DEFAULT 0,
+        `title` STRING,
+        `deprecated` INTEGER(1),
         `part` STRING NOT NULL DEFAULT '*',
         `vendor` STRING NOT NULL DEFAULT '*',
         `product` STRING NOT NULL DEFAULT '*',
@@ -190,14 +190,14 @@ class VulnerabilityDB(object):
         `rowid` INTEGER PRIMARY KEY,
         `year` INTEGER NOT NULL,
         `id` INTEGER NOT NULL,
-        `cvss_score` STRING NOT NULL,
-        `cvss_access_vector` STRING NOT NULL,
-        `cvss_access_complexity` STRING NOT NULL,
-        `cvss_authentication` STRING NOT NULL,
-        `cvss_integrity_impact` STRING NOT NULL,
-        `cvss_source` STRING NOT NULL,
-        `cwe` STRING NOT NULL,
-        `summary` STRING NOT NULL,
+        `cvss_score` STRING,
+        `cvss_access_vector` STRING,
+        `cvss_access_complexity` STRING,
+        `cvss_authentication` STRING,
+        `cvss_integrity_impact` STRING,
+        `cvss_source` STRING,
+        `cwe` STRING,
+        `summary` STRING,
         UNIQUE (`year`, `id`)
     );
     CREATE INDEX IF NOT EXISTS `cve_year` ON `cve`(`year`);
@@ -206,11 +206,13 @@ class VulnerabilityDB(object):
 
     CREATE TABLE IF NOT EXISTS `cve_cpe` (
         `id_cve` INTEGER NOT NULL,
-        `id_cpe` INTEGER NOT NULL,
+        `id_cpe` INTEGER,
+        `cpe_name` STRING NOT NULL,
         FOREIGN KEY(`id_cve`) REFERENCES `cve`(`rowid`) ON DELETE CASCADE,
-        FOREIGN KEY(`id_cpe`) REFERENCES `cpe`(`rowid`) ON DELETE CASCADE,
-        UNIQUE(`id_cve`, `id_cpe`)
+        FOREIGN KEY(`id_cpe`) REFERENCES `cpe`(`rowid`) ON DELETE SET NULL,
+        UNIQUE (`id_cve`, `cpe_name`) ON CONFLICT REPLACE
     );
+    CREATE INDEX IF NOT EXISTS `cve_cpe_name` ON `cve_cpe`(`cpe_name`);
 
     CREATE TABLE IF NOT EXISTS `cve_references` (
         `id_cve` INTEGER NOT NULL,
@@ -305,7 +307,7 @@ class VulnerabilityDB(object):
         )
         row = self.__cursor.fetchone()
         if row:
-            db_time, db_time_str = row[0]
+            db_time, db_time_str = row
         else:
             db_time = None
             db_time_str = None
@@ -346,6 +348,8 @@ class VulnerabilityDB(object):
             if not db_time or e.code != 304:
                 raise
             downloaded = False
+            if self.DEBUG:
+                print "Already up-to-date: %s" % xml_file
         if downloaded:
             if self.DEBUG:
                 print "Downloading from: %s" % req.get_full_url()
@@ -367,8 +371,8 @@ class VulnerabilityDB(object):
                 (xml_file, db_time, db_time_str)
             )
 
-        # Return the open XML file.
-        return xml_parser
+            # Return the open XML file.
+            return xml_parser
 
     @transactional
     def __load_cpe(self):
@@ -381,9 +385,6 @@ class VulnerabilityDB(object):
         if xml_parser:
             if self.DEBUG:
                 print "Loading file: %s" % xml_file
-
-            # Delete the old data.
-            self.__cursor.execute("DELETE FROM `cpe`;")
 
             # Parse the XML file and store the data into the database.
             prefix20 = "{http://cpe.mitre.org/dictionary/2.0}"
@@ -416,7 +417,7 @@ class VulnerabilityDB(object):
                 params = (name23, name22, title, deprecated)
                 params = params + tuple( parse_cpe(name23) )
                 self.__cursor.execute(
-                    "INSERT INTO `cpe` VALUES "
+                    "INSERT OR REPLACE INTO `cpe` VALUES "
                     "(NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     params
                 )
@@ -449,8 +450,10 @@ class VulnerabilityDB(object):
             _, root  = context.next()
             ns_v = "{http://scap.nist.gov/schema/vulnerability/0.4}"
             ns_c = "{http://scap.nist.gov/schema/cvss-v2/0.2}"
+            ns_s = "{http://scap.nist.gov/schema/feed/vulnerability/2.0}"
+            entry_tag = ns_s + "entry"
             for event, item in context:
-                if event != "end" or item.tag != "entry":
+                if event != "end" or item.tag != entry_tag:
                     continue
                 cve = item.attrib["id"]
                 assert cve.startswith("CVE-") and len(cve) in (13, 14), cve
@@ -459,31 +462,53 @@ class VulnerabilityDB(object):
                 else:
                     assert int(cve[4:8]) <= int(year), cve
                 cve = cve[9:]
-                cwe = item.find(".//%scwe" % ns_v).attrib["id"]
+                has_cwe = item.find(".//%scwe" % ns_v)
+                if has_cwe:
+                    cwe = has_cwe.attrib["id"]
+                else:
+                    cwe = None
                 soft = item.find(".//%svulnerable-software-list" % ns_v)
-                products = [
-                    child.text
-                    for child in soft.iter(".//%sproduct" % ns_v)
-                ]
+                if soft:
+                    products = [
+                        child.text
+                        for child in soft.iter("%sproduct" % ns_v)
+                    ]
+                else:
+                    products = []
                 cvss = item.find(".//%sbase_metrics" % ns_c)
-                cvss_score = item.find(
-                    ".//%sscore" % ns_c).text
-                cvss_access_vector = item.find(
-                    ".//%saccess-vector" % ns_c).text
-                cvss_access_complexity = item.find(
-                    ".//%saccess-complexity" % ns_c).text
-                cvss_authentication = item.find(
-                    ".//%sauthentication" % ns_c).text
-                cvss_integrity_impact = item.find(
-                    ".//%sintegrity-impact" % ns_c).text
-                cvss_source = item.find(
-                    ".//%ssource" % ns_c).text
+                if cvss:
+                    cvss_score = item.find(
+                        ".//%sscore" % ns_c).text
+                    cvss_access_vector = item.find(
+                        ".//%saccess-vector" % ns_c).text
+                    cvss_access_complexity = item.find(
+                        ".//%saccess-complexity" % ns_c).text
+                    cvss_authentication = item.find(
+                        ".//%sauthentication" % ns_c).text
+                    cvss_integrity_impact = item.find(
+                        ".//%sintegrity-impact" % ns_c).text
+                    cvss_source = item.find(
+                        ".//%ssource" % ns_c).text
+                else:
+                    cvss_score             = None
+                    cvss_access_vector     = None
+                    cvss_access_complexity = None
+                    cvss_authentication    = None
+                    cvss_integrity_impact  = None
+                    cvss_source            = None
                 refs = item.find(".//%sreferences" % ns_v)
-                references = [
-                    child.attrib["href"]
-                    for child in refs.iter(".//%sreference" % ns_v)
-                ]
-                refs = item.find(".//%ssummary" % ns_v).text
+                if refs:
+                    references = [
+                        child.attrib["href"]
+                        for child in refs.iter("%sreference" % ns_v)
+                    ]
+                else:
+                    references = []
+                has_summary = item.find(".//%ssummary" % ns_v)
+                if has_summary:
+                    summary = has_summary.text
+                else:
+                    summary = None
                 self.__cursor.execute(
                     "INSERT INTO `cve` VALUES (NULL, "
                     "?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
@@ -494,19 +519,24 @@ class VulnerabilityDB(object):
                 rowid = self.__cursor.lastrowid
                 for ref in references:
                     self.__cursor.execute(
-                        "INSERT INTO `cve_references` VALUES (?, ?);"
+                        "INSERT INTO `cve_references` VALUES (?, ?);",
                         (rowid, ref)
                     )
                 for cpe in products:
                     ver = get_cpe_version(cpe).replace(".", "")
                     self.__cursor.execute(
-                        "SELECT `rowid` FROM `cpe` WHERE `name%s` = ?;" % ver,
+                        "SELECT `rowid` FROM `cpe` WHERE `name%s` = ? LIMIT 1;"
+                        % ver,
                         (cpe,)
                     )
-                    cpe_id = self.__cursor.fetchone()[0]
+                    is_official = self.__cursor.fetchone()
+                    if is_official:
+                        cpe_id = is_official[0]
+                    else:
+                        cpe_id = None
                     self.__cursor.execute(
-                        "INSERT INTO `cve_cpe` VALUES (?, ?);",
-                        (rowid, cpe_id)
+                        "INSERT INTO `cve_cpe` VALUES (?, ?, ?);",
+                        (rowid, cpe_id, cpe)
                     )
 
             # Delete the XML file.
@@ -553,17 +583,15 @@ class VulnerabilityDB(object):
         ver = get_cpe_version(cpe).replace(".", "")
         parsed = parse_cpe(cpe)
 
-        params = [x for x in parsed if x != "*"]
+        params = [x for x in parsed if x and x != "*"]
         if not params:
             return set([cpe])
         params.insert(0, cpe)
 
-        columns = ["part", "vendor", "product", "version", "update"]
-        if ver == "23":
-            columns.extend([
-                "edition", "language", "sw_edition",
-                "target_sw", "target_hw", "other"
-            ])
+        columns = [
+            "part", "vendor", "product", "version", "update", "edition"
+            "language", "sw_edition", "target_sw", "target_hw", "other"
+        ]
 
         query = "SELECT `name%s` FROM `cpe` WHERE " % ver
         if not include_deprecated:
@@ -572,7 +600,7 @@ class VulnerabilityDB(object):
         query += " OR (%s)" % " AND ".join(
             "`%s` = ?" % columns[i]
             for i in xrange(len(columns))
-            if parsed[i] != "*"
+            if parsed[i] and parsed[i] != "*"
         )
         query += ");"
 
