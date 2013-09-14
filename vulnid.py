@@ -122,6 +122,8 @@ class VulnerabilityDB(object):
     https://nvd.nist.gov/download.cfm#CVE_FEED
     """
 
+    DEBUG = True  # Set to False to suppress prints
+
     DEFAULT_DB_FILE = "vulnid.db"
 
     CPE_XML_FILE = "official-cpe-dictionary_v2.3.xml"
@@ -140,7 +142,8 @@ class VulnerabilityDB(object):
 
     CREATE TABLE IF NOT EXISTS `files` (
         `filename` STRING NOT NULL UNIQUE ON CONFLICT REPLACE,
-        `last_modified` INTEGER NOT NULL
+        `last_modified` INTEGER NOT NULL,
+        `last_modified_string` STRING NOT NULL
     );
 
     ---------
@@ -187,17 +190,14 @@ class VulnerabilityDB(object):
         `rowid` INTEGER PRIMARY KEY,
         `year` INTEGER NOT NULL,
         `id` INTEGER NOT NULL,
-        `published` STRING,
-        `last_modified` STRING,
-        `cvss_score` STRING,
-        `cvss_access_vector` STRING,
-        `cvss_access_complexity` STRING,
-        `cvss_authentication` STRING,
-        `cvss_integrity_impact` STRING,
-        `cvss_source` STRING,
-        `cvss_generated` STRING,
-        `cwe` STRING,
-        `summary` STRING,
+        `cvss_score` STRING NOT NULL,
+        `cvss_access_vector` STRING NOT NULL,
+        `cvss_access_complexity` STRING NOT NULL,
+        `cvss_authentication` STRING NOT NULL,
+        `cvss_integrity_impact` STRING NOT NULL,
+        `cvss_source` STRING NOT NULL,
+        `cwe` STRING NOT NULL,
+        `summary` STRING NOT NULL,
         UNIQUE (`year`, `id`)
     );
     CREATE INDEX IF NOT EXISTS `cve_year` ON `cve`(`year`);
@@ -299,15 +299,16 @@ class VulnerabilityDB(object):
 
         # Get the last modified time from the database if available.
         self.__cursor.execute(
-            "SELECT `last_modified` FROM `files`"
+            "SELECT `last_modified`, `last_modified_string` FROM `files`"
             " WHERE `filename` = ? LIMIT 1;",
             (xml_file,)
         )
         row = self.__cursor.fetchone()
         if row:
-            db_time = row[0]
+            db_time, db_time_str = row[0]
         else:
             db_time = None
+            db_time_str = None
 
         # Also try looking for the file locally.
         # If found but can't be read, delete it.
@@ -326,22 +327,28 @@ class VulnerabilityDB(object):
 
         # Use the local file if newer or not yet loaded in the database.
         if local_time and (not db_time or local_time > db_time):
+            if self.DEBUG:
+                print "Found local file: %s" % xml_file
+            self.__cursor.execute(
+                "INSERT INTO `files` VALUES (?, ?, ?);",
+                (xml_file, local_time, asctime(gmtime(local_time)))
+            )
             return xml_parser
 
         # Otherwise, download the file if newer or not yet loaded.
-        if db_time:
-            req.add_header(
-                "If-Modified-Since",            # -1 minute to compensate
-                asctime(gmtime(db_time - 3600)) # possible timing errors
-            )
+        if db_time_str:
+            req.add_header("If-Modified-Since", db_time_str)
         try:
             src = urlopen(req)
             downloaded = True
+            db_time_str = src.info().get("Last-Modified", None)
         except HTTPError, e:
             if not db_time or e.code != 304:
                 raise
             downloaded = False
         if downloaded:
+            if self.DEBUG:
+                print "Downloading from: %s" % req.get_full_url()
             try:
                 with open(xml_file, "wb") as dst:
                     copyfileobj(src, dst)
@@ -351,16 +358,17 @@ class VulnerabilityDB(object):
             xml_parser = None # free memory before using more
             xml_parser = etree.iterparse(
                 xml_file, events=("start", "end"))
-        return xml_parser
+            if not db_time:
+                db_time = getmtime(xml_file)
+            if not db_time_str:
+                db_time_str = asctime(gmtime(db_time))
+            self.__cursor.execute(
+                "INSERT INTO `files` VALUES (?, ?, ?);",
+                (xml_file, db_time, db_time_str)
+            )
 
-    # Save the timestamp for this file and delete it.
-    # This method assumes it's being called from within an open transaction.
-    def __finished_downloading(self, filename):
-        self.__cursor.execute(
-            "INSERT INTO `files` VALUES (?, ?);",
-            (filename, getmtime(filename))
-        )
-        unlink(filename)
+        # Return the open XML file.
+        return xml_parser
 
     @transactional
     def __load_cpe(self):
@@ -371,6 +379,8 @@ class VulnerabilityDB(object):
 
         # Do we need to load new data?
         if xml_parser:
+            if self.DEBUG:
+                print "Loading file: %s" % xml_file
 
             # Delete the old data.
             self.__cursor.execute("DELETE FROM `cpe`;")
@@ -411,46 +421,98 @@ class VulnerabilityDB(object):
                     params
                 )
 
-            # Save the timestamp for this file and delete it.
-            self.__finished_downloading(xml_file)
+            # Delete the XML file.
+            ##unlink(xml_file)
+            if self.DEBUG:
+                print "Deleted file: %s" % xml_file
 
     @transactional
     def __load_cve(self, year):
 
-        # Determine if we already have CVE data for this year.
-        self.__cursor.execute(
-            "SELECT COUNT(`rowid`) FROM `cve` WHERE `year` = ? LIMIT 1;",
-            (year,)
-        )
-        db_is_empty = not bool(self.__cursor.fetchone()[0])
-
-        # Download and open the XML file for this year.
-        xml_file = self.CVE_XML_FILE % year
-        root, downloaded = self.__download(
-            self.CVE_URL_BASE, xml_file,
-            always_open = db_is_empty)
+        # Download and open the XML file.
+        xml_file   = self.CVE_XML_FILE % year
+        xml_parser = self.__download(self.CVE_URL_BASE, xml_file)
 
         # Do we need to load new data?
-        if downloaded or db_is_empty:
+        if xml_parser:
+            if self.DEBUG:
+                print "Loading file: %s" % xml_file
 
             # Delete the old data.
             self.__cursor.execute(
-                "DELETE FROM `cve` WHERE `year` = ?;"
+                "DELETE FROM `cve` WHERE `year` = ?;",
                 (year,)
             )
 
             # Parse the XML file and store the data into the database.
+            context  = iter(xml_parser)
+            _, root  = context.next()
+            ns_v = "{http://scap.nist.gov/schema/vulnerability/0.4}"
+            ns_c = "{http://scap.nist.gov/schema/cvss-v2/0.2}"
+            for event, item in context:
+                if event != "end" or item.tag != "entry":
+                    continue
+                cve = item.attrib["id"]
+                assert cve.startswith("CVE-") and len(cve) in (13, 14), cve
+                if int(year) > 2002:
+                    assert cve[4:8] == year, cve
+                else:
+                    assert int(cve[4:8]) <= int(year), cve
+                cve = cve[9:]
+                cwe = item.find(".//%scwe" % ns_v).attrib["id"]
+                soft = item.find(".//%svulnerable-software-list" % ns_v)
+                products = [
+                    child.text
+                    for child in soft.iter(".//%sproduct" % ns_v)
+                ]
+                cvss = item.find(".//%sbase_metrics" % ns_c)
+                cvss_score = item.find(
+                    ".//%sscore" % ns_c).text
+                cvss_access_vector = item.find(
+                    ".//%saccess-vector" % ns_c).text
+                cvss_access_complexity = item.find(
+                    ".//%saccess-complexity" % ns_c).text
+                cvss_authentication = item.find(
+                    ".//%sauthentication" % ns_c).text
+                cvss_integrity_impact = item.find(
+                    ".//%sintegrity-impact" % ns_c).text
+                cvss_source = item.find(
+                    ".//%ssource" % ns_c).text
+                refs = item.find(".//%sreferences" % ns_v)
+                references = [
+                    child.attrib["href"]
+                    for child in refs.iter(".//%sreference" % ns_v)
+                ]
+                refs = item.find(".//%ssummary" % ns_v).text
+                self.__cursor.execute(
+                    "INSERT INTO `cve` VALUES (NULL, "
+                    "?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (year, cve, cvss_score, cvss_access_vector,
+                     cvss_access_complexity, cvss_authentication,
+                     cvss_integrity_impact, cvss_source, cwe, summary)
+                )
+                rowid = self.__cursor.lastrowid
+                for ref in references:
+                    self.__cursor.execute(
+                        "INSERT INTO `cve_references` VALUES (?, ?);"
+                        (rowid, ref)
+                    )
+                for cpe in products:
+                    ver = get_cpe_version(cpe).replace(".", "")
+                    self.__cursor.execute(
+                        "SELECT `rowid` FROM `cpe` WHERE `name%s` = ?;" % ver,
+                        (cpe,)
+                    )
+                    cpe_id = self.__cursor.fetchone()[0]
+                    self.__cursor.execute(
+                        "INSERT INTO `cve_cpe` VALUES (?, ?);",
+                        (rowid, cpe_id)
+                    )
 
-
-            raise NotImplementedError()
-
-
-
-            # Save the timestamp for this file.
-            self.__finished_downloading(xml_file)
-
-        # Delete the file.
-        unlink(xml_file)
+            # Delete the XML file.
+            ##unlink(xml_file)
+            if self.DEBUG:
+                print "Deleted file: %s" % xml_file
 
 
     def update(self):
@@ -469,8 +531,8 @@ class VulnerabilityDB(object):
         self.__load_cpe()
 
         # Load the CVE data for each year from 2002 until today.
-        ##for year in xrange(2002, date.today().year + 1):
-        ##    self.__load_cve( str(year) )
+        for year in xrange(2002, date.today().year + 1):
+            self.__load_cve( str(year) )
 
     @transactional
     def resolve_cpe(self, cpe, include_deprecated = True):
