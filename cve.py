@@ -77,9 +77,7 @@ class CVE(object):
 
     @property
     def name(self):
-        if self.number < 10000:
-            return "CVE-%04d-%04d" % (self.year, self.number)
-        return "CVE-%04d-%d" % (self.year, self.number)
+        return "CVE-%04d-%04d" % (self.year, self.number)
 
     @property
     def year(self):
@@ -754,6 +752,114 @@ class CVEDB(object):
             vendor_statements = vendor_statements
         )
 
+    @transactional
+    def by_year(self, year):
+        """
+        Get all CVE names for a given year.
+
+        :param year: Year to query.
+        :type: year: int
+
+        :returns: CVE names.
+        :rtype: list(str)
+        """
+        self.__cursor.execute(
+            "SELECT `number` FROM `cve` WHERE `year` = ?;",
+            (year,)
+        )
+        return [
+            "CVE-%04d-%04d" % (year, row[0])
+            for row in self.__cursor.fetchall()
+        ]
+
+    @transactional
+    def by_cvss(self, cvss):
+        """
+        Get all CVE names that have the given CVSS base score.
+
+        :param cvss: CVSS base score.
+        :type: cvss: float
+
+        :returns: CVE names.
+        :rtype: list(str)
+        """
+        self.__cursor.execute(
+            "SELECT `year`, `number` FROM `cve` WHERE `cvss_score` = ?;",
+            (cvss,)
+        )
+        return [
+            "CVE-%04d-%04d" % (row[0], row[1])
+            for row in self.__cursor.fetchall()
+        ]
+
+    @transactional
+    def by_cwe(self, cwe):
+        """
+        Get all CVE names for a given CWE ID.
+
+        :param cwe: CWE ID.
+        :type: cwe: str
+
+        :returns: CVE names.
+        :rtype: list(str)
+        """
+        self.__cursor.execute(
+            "SELECT `year`, `number` FROM `cve` WHERE `cwe` = ?;",
+            (cwe,)
+        )
+        return [
+            "CVE-%04d-%04d" % (row[0], row[1])
+            for row in self.__cursor.fetchall()
+        ]
+
+    @transactional
+    def by_cpe(self, cpe):
+        """
+        Get all CVE names for a given CPE name.
+
+        :param cwe: CPE name.
+        :type: cwe: str
+
+        :returns: CVE names.
+        :rtype: list(str)
+        """
+        self.__cursor.execute(
+            "SELECT `cve`.`year`, `cve`.`number`"
+            "  FROM `cve`, `cve_cpe`, `cve_cpe_names`"
+            " WHERE `cve_cpe_names`.`cpe_name` = ?"
+            "   AND `cve_cpe`.`id_cpe` = `cve_cpe_names`.`rowid`"
+            "   AND `cve_cpe`.`id_cve` = `cve`.`rowid`;",
+            (cpe,)
+        )
+        return [
+            "CVE-%04d-%04d" % (row[0], row[1])
+            for row in self.__cursor.fetchall()
+        ]
+
+    @transactional
+    def by_ref(self, url):
+        """
+        Get all CVE names that have the given URL listed as reference.
+
+        :param url: Reference URL.
+        :type: url: str
+
+        :returns: CVE names.
+        :rtype: list(str)
+        """
+        self.__cursor.execute(
+            "SELECT `cve`.`year`, `cve`.`number`"
+            "  FROM `cve`, `cve_references`, `cve_ref_urls`"
+            " WHERE `cve_ref_urls`.`url` = ?"
+            "   AND `cve_references`.`id_ref` = `cve_ref_urls`.`rowid`"
+            "   AND `cve_references`.`id_cve` = `cve`.`rowid`;",
+            (url,)
+        )
+        return [
+            "CVE-%04d-%04d" % (row[0], row[1])
+            for row in self.__cursor.fetchall()
+        ]
+
 
 if __name__ == "__main__":
     import sys
@@ -762,8 +868,22 @@ if __name__ == "__main__":
         if not is_new:
             ##db.update()
             pass
+        cve_list = []
+        for token in sys.argv[1:]:
+            if token.startswith("CVE-"):
+                cve_list.append(token)
+            elif token.startswith("CWE-"):
+                cve_list.extend(db.by_cwe(token))
+            elif token.startswith("cpe:/"):
+                cve_list.extend(db.by_cpe(token))
+            elif token.startswith("http://") or token.startswith("https://"):
+                cve_list.extend(db.by_ref(token))
+            elif len(token) == 4 and token.isdigit():
+                cve_list.extend(db.by_year(int(token)))
+            else:
+                cve_list.extend(db.by_cvss(float(token)))
         sep = ""
-        for cvename in sys.argv[1:]:
+        for cvename in cve_list:
             print
             if sep:
                 print sep
