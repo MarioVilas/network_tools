@@ -860,6 +860,33 @@ class CVEDB(object):
             for row in self.__cursor.fetchall()
         ]
 
+    @transactional
+    def search(self, words):
+        """
+        Get all CVE names that have all the given words in their summary.
+
+        .. note: This query may be slow, depending on your search terms.
+
+        :param words: Words to look for.
+        :type: words: list(str)
+
+        :returns: CVE names.
+        :rtype: list(str)
+        """
+        if not words:
+            return []
+        if isinstance(words, basestring):
+            words = [words]
+        query = "SELECT `year`, `number` FROM `cve` WHERE "
+        query += " AND ".join(["`summary` LIKE ?"] * len(words))
+        query += ";"
+        params = [ "%%%s%%" % word.replace("%", "%%") for word in words ]
+        self.__cursor.execute(query, params)
+        return [
+            "CVE-%04d-%04d" % (row[0], row[1])
+            for row in self.__cursor.fetchall()
+        ]
+
 
 if __name__ == "__main__":
     import sys
@@ -881,7 +908,16 @@ if __name__ == "__main__":
             elif len(token) == 4 and token.isdigit():
                 cve_list.extend(db.by_year(int(token)))
             else:
-                cve_list.extend(db.by_cvss(float(token)))
+                try:
+                    cvss = float(token)
+                except Exception:
+                    cvss = None
+                if cvss is not None:
+                    cve_list.extend(db.by_cvss())
+                else:
+                    words = [x.strip() for x in re.split("\b", token)]
+                    words = [x for x in words if x]
+                    cve_list.extend(db.search(words))
         sep = ""
         for cvename in cve_list:
             print
