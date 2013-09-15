@@ -197,11 +197,16 @@ class CPEDB(object):
         # Open the database file.
         self.__db = sqlite3.connect(db_file)
 
-        # Populate the database on the first run.
-        # On error delete the database and raise an exception.
         try:
+
+            # Create the database schema.
+            self.__create_schema()
+
+            # Populate the database on the first run.
             if is_new:
                 self.update()
+
+        # On error delete the database and raise an exception.
         except:
             self.close()
             raise
@@ -241,6 +246,9 @@ class CPEDB(object):
                 self.__cursor = None
                 self.__busy   = False
 
+    @transactional
+    def __create_schema(self):
+        self.__cursor.executescript(self.SCHEMA)
 
     # If the XML file is missing, broken or older, download it.
     # This method assumes it's being called from within an open transaction.
@@ -334,9 +342,6 @@ class CPEDB(object):
         and recreates the database from them.
         """
 
-        # Create the database schema.
-        self.__cursor.executescript(self.SCHEMA)
-
         # Download and open the XML file.
         xml_file   = self.CPE_XML_FILE
         xml_parser = self.__download(self.CPE_URL_BASE, xml_file)
@@ -389,7 +394,7 @@ class CPEDB(object):
 
 
     @transactional
-    def resolve_cpe(self, cpe, include_deprecated = True):
+    def resolve(self, cpe, include_deprecated = True):
         """
         Resolve the given CPE with wildcards.
 
@@ -433,7 +438,7 @@ class CPEDB(object):
 
 
     @transactional
-    def get_cpe_title(self, cpe):
+    def get_title(self, cpe):
         """
         Get the user-friendly title of a CPE name.
 
@@ -452,7 +457,7 @@ class CPEDB(object):
 
 
     @transactional
-    def search_cpe(self, **kwargs):
+    def search(self, **kwargs):
         """
         Search the CPE database for the requested fields.
         The value '*' is assumed for missing fields.
@@ -553,6 +558,6 @@ if __name__ == "__main__":
         if not is_new:
             db.update()
             pass
-        for cpe in db.search_cpe(title=title, version=version, part="o", target_hw=target_hw):
+        for cpe in db.search(title=title, version=version, part="o", target_hw=target_hw):
             ##print cpe
-            print db.get_cpe_title(cpe)
+            print db.get_title(cpe)
