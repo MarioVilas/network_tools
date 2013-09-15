@@ -892,9 +892,10 @@ if __name__ == "__main__":
     import sys
     is_new = not exists(CVEDB.DEFAULT_DB_FILE)
     with CVEDB() as db:
-        if not is_new:
-            ##db.update()
-            pass
+        if not sys.argv[1:]:
+            if not is_new:
+                db.update()
+            exit(0)
         cve_list = []
         for token in sys.argv[1:]:
             if token.startswith("CVE-"):
