@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 # Copyright (c) 2009-2013, Mario Vilas
 # All rights reserved.
@@ -49,6 +50,153 @@ def transactional(fn):
     def wrapper(self, *args, **kwargs):
         return self._transaction(fn, args, kwargs)
     return wrapper
+
+
+class CVE(object):
+    """
+    Represents an entry in the CVE database.
+    """
+
+    def __init__(self,
+                 year, number, cvss_score, cvss_access_vector,
+                 cvss_access_complexity, cvss_authentication,
+                 cvss_integrity_impact, cwe, summary, products,
+                 references, vendor_statements):
+        self.__year                   = year
+        self.__number                 = number
+        self.__cvss_score             = cvss_score
+        self.__cvss_access_vector     = cvss_access_vector
+        self.__cvss_access_complexity = cvss_access_complexity
+        self.__cvss_authentication    = cvss_authentication
+        self.__cvss_integrity_impact  = cvss_integrity_impact
+        self.__cwe                    = cwe
+        self.__summary                = summary
+        self.__products               = products
+        self.__references             = references
+        self.__vendor_statements      = vendor_statements
+
+    @property
+    def name(self):
+        if self.number < 10000:
+            return "CVE-%04d-%04d" % (self.year, self.number)
+        return "CVE-%04d-%d" % (self.year, self.number)
+
+    @property
+    def year(self):
+        return self.__year
+
+    @property
+    def number(self):
+        return self.__number
+
+    @property
+    def cvss_score(self):
+        return self.__cvss_score
+
+    @property
+    def cvss_access_vector(self):
+        return self.__cvss_access_vector
+
+    @property
+    def cvss_access_complexity(self):
+        return self.__cvss_access_complexity
+
+    @property
+    def cvss_authentication(self):
+        return self.__cvss_authentication
+
+    @property
+    def cvss_integrity_impact(self):
+        return self.__cvss_integrity_impact
+
+    @property
+    def cwe(self):
+        return self.__cwe
+
+    @property
+    def summary(self):
+        return self.__summary
+
+    @property
+    def products(self):
+        return self.__products
+
+    @property
+    def references(self):
+        return self.__references
+
+    @property
+    def vendor_statements(self):
+        return self.__vendor_statements
+
+    def __str__(self):
+        r = []
+        r.append(self.name)
+        r.append("=" * len(self.name))
+        r.append("")
+        if self.cvss_score:
+            r.append("CVSS Base Score:")
+            r.append("  %s" % self.cvss_score)
+        if self.cvss_access_vector:
+            r.append("CVSS Access Vector:")
+            r.append("  %s" % self.cvss_access_vector)
+        if self.cvss_access_complexity:
+            r.append("CVSS Access Complexity:")
+            r.append("  %s" % self.cvss_access_complexity)
+        if self.cvss_authentication:
+            r.append("CVSS Authentication:")
+            r.append("  %s" % self.cvss_authentication)
+        if self.cvss_integrity_impact:
+            r.append("CVSS Integrity Impact:")
+            r.append("  %s" % self.cvss_integrity_impact)
+        if self.cwe:
+            r.append("CWE ID:")
+            r.append("  %s" % self.cwe)
+        if self.summary:
+            if r[-1] != "":
+                r.append("")
+            r.append("Summary")
+            r.append("-------")
+            r.append("")
+            if "\n" in self.summary:
+                r.append("::")
+                for line in self.summary.split("\n"):
+                    r.append("  " + line)
+            else:
+                r.append(self.summary.strip())
+        if self.products:
+            if r[-1] != "":
+                r.append("")
+            r.append("Vulnerable products")
+            r.append("-------------------")
+            r.append("")
+            for cpe in self.products:
+                r.append("- " + cpe)
+        if self.references:
+            if r[-1] != "":
+                r.append("")
+            r.append("References")
+            r.append("----------")
+            r.append("")
+            for url in self.references:
+                r.append("- " + url)
+        if self.vendor_statements:
+            if r[-1] != "":
+                r.append("")
+            r.append("Vendor Statements")
+            r.append("-----------------")
+            for (contributor, organization, statement) \
+            in self.vendor_statements:
+                r.append("")
+                if contributor and organization:
+                    r.append("*%s from %s:*" % (contributor, organization))
+                elif contributor:
+                    r.append("*%s:*" % contributor)
+                elif organization:
+                    r.append("*%s:*" % organization)
+                for line in statement.split("\n"):
+                    r.append("  " + line)
+        return "\n".join(r)
 
 
 class CVEDB(object):
@@ -532,11 +680,93 @@ class CVEDB(object):
             # Return the open XML file.
             return xml_parser
 
+    @transactional
+    def get(self, cvename):
+        """
+        Get info on a CVE by name.
+
+        :param cvename: CVE name.
+        :type: cvename: str
+
+        :returns: CVE information.
+        :rtype: CVE
+        """
+        if not isinstance(cvename, basestring):
+            raise TypeError("Expected string, got %r instead" % type(cvename))
+        if not cvename.startswith("CVE-"):
+            raise ValueError("Invalid CVE name: %s" % cvename)
+        if len(cvename) not in (13, 14):
+            raise ValueError("Invalid CVE name: %s" % cvename)
+        year   = int(cvename[4:8])
+        number = int(cvename[9:])
+        self.__cursor.execute(
+            "SELECT * FROM `cve` WHERE `year` = ? AND `number` = ? LIMIT 1;",
+            (year, number)
+        )
+        row = self.__cursor.fetchone()
+        if not row:
+            raise KeyError("CVE name not found: %s" % cvename)
+        rowid = row[0]
+        properties = []
+        for x in row[1:]:
+            if isinstance(x, unicode):
+                try:
+                    x = x.encode("UTF-8")
+                except Exception:
+                    pass
+            properties.append(x)
+        self.__cursor.execute(
+            "SELECT `cve_cpe_names`.`cpe_name`"
+            "  FROM `cve_cpe_names`, `cve_cpe`"
+            " WHERE `cve_cpe`.`id_cve` = ?"
+            "   AND `cve_cpe`.`id_cpe` = `cve_cpe_names`.`rowid`;",
+            (rowid,)
+        )
+        products = tuple(str(row[0]) for row in self.__cursor.fetchall())
+        self.__cursor.execute(
+            "SELECT `cve_ref_urls`.`url`"
+            "  FROM `cve_ref_urls`, `cve_references`"
+            " WHERE `cve_references`.`id_cve` = ?"
+            "   AND `cve_references`.`id_ref` = `cve_ref_urls`.`rowid`;",
+            (rowid,)
+        )
+        references = tuple(str(row[0]) for row in self.__cursor.fetchall())
+        self.__cursor.execute(
+            "SELECT * FROM `cve_vendor_statements` WHERE `id_cve` = ?;",
+            (rowid,)
+        )
+        tmp = []
+        for row in self.__cursor.fetchall():
+            tmp2 = []
+            for x in row[1:]:
+                if isinstance(x, unicode):
+                    try:
+                        x = x.encode("UTF-8")
+                    except Exception:
+                        pass
+                tmp2.append(x)
+            tmp.append(tuple(tmp2))
+        vendor_statements = tuple(tmp)
+        return CVE(
+                         *properties,
+                     products = products,
+                   references = references,
+            vendor_statements = vendor_statements
+        )
+
 
 if __name__ == "__main__":
-
+    import sys
     is_new = not exists(CVEDB.DEFAULT_DB_FILE)
     with CVEDB() as db:
         if not is_new:
-            db.update()
+            ##db.update()
             pass
+        sep = ""
+        for cvename in sys.argv[1:]:
+            print
+            if sep:
+                print sep
+                print
+            sep = "----"
+            print db.get(cvename)
