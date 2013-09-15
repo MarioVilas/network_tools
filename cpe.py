@@ -111,7 +111,7 @@ def transactional(fn):
     return wrapper
 
 
-class VulnerabilityDB(object):
+class CPEDB(object):
     """
     CPE dictionary.
 
@@ -327,6 +327,7 @@ class VulnerabilityDB(object):
             return xml_parser
 
 
+    @transactional
     def update(self):
         """
         Update the database.
@@ -549,8 +550,8 @@ if __name__ == "__main__":
         version = platform.mac_ver()[1]
         #target_hw = platform.uname()[-1]
 
-    is_new = not exists(VulnerabilityDB.DEFAULT_DB_FILE)
-    with VulnerabilityDB() as db:
+    is_new = not exists(CPEDB.DEFAULT_DB_FILE)
+    with CPEDB() as db:
         if not is_new:
             db.update()
             pass
