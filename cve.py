@@ -260,7 +260,7 @@ class CVEDB(object):
                     root.clear()
 
             # Delete the XML file.
-            ##unlink(xml_file)
+            unlink(xml_file)
             if self.DEBUG:
                 print "Deleted file: %s" % xml_file
 
@@ -415,7 +415,7 @@ class CVEDB(object):
                 self.__load_vendor_statement_entry(item)
 
             # Delete the XML file.
-            ##unlink(xml_file)
+            unlink(xml_file)
             if self.DEBUG:
                 print "Deleted file: %s" % xml_file
 
