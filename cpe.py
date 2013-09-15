@@ -385,7 +385,7 @@ class CPEDB(object):
                 )
 
             # Delete the XML file.
-            ##unlink(xml_file)
+            unlink(xml_file)
             if self.DEBUG:
                 print "Deleted file: %s" % xml_file
 
