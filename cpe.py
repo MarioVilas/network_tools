@@ -204,8 +204,6 @@ class CPEDB(object):
                 self.update()
         except:
             self.close()
-            if is_new:
-                unlink(db_file)
             raise
 
     def close(self):
