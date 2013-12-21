@@ -522,14 +522,24 @@ class Target(object):
                 urllib.quote(self.host),
                 str(self.port),
             )
-        data = (
-            urllib.quote(self.proto),
-            netloc,
-            urllib.quote(self.mailbox),
-            '',
-            '',
-            ''
-        )
+        if self.mailbox:
+            data = (
+                urllib.quote(self.proto),
+                netloc,
+                urllib.quote(self.mailbox),
+                '',
+                '',
+                ''
+            )
+        else:
+            data = (
+                urllib.quote(self.proto),
+                netloc,
+                '',
+                '',
+                '',
+                ''
+            )
         return urlparse.urlunparse(data)
 
     def __repr__(self):
@@ -908,12 +918,23 @@ class Main(object):
 Where all components are optional. Only the IMAP protocol supports mailboxes.
 The default protocol is IMAP over SSL. The default username is the current
 user and the default host is localhost. If no mailbox is specified for IMAP,
-all mails in all mailboxes will be downloaded.
+all mails in all mailboxes will be downloaded. If the username contains a "@"
+you have to urlescape it as "%40".
+
+This is an example of making a full backup of a Gmail account:
+    %prog imaps://user%40gmail.com@imap.gmail.com
+
+Note that for Gmail you'll probably want to enable the "Chat" label on IMAP,
+otherwise chats won't be backed up. You may also want to disable your custom
+labels, as they will be made redundant by the "All Mail" label. Also, labels in
+Gmail are language-dependent, "All Mail" may be called something else.
 
 Be careful when enabling the debug log, passwords will be shown on screen!
 """
 
-        parser = optparse.OptionParser(usage=usage, epilog=epilog)
+        parser = optparse.OptionParser(
+            usage=usage, epilog=epilog, formatter=CustomFormatter())
+        parser.epilog = parser.epilog.replace("%prog", parser.get_prog_name())
         parser.add_option("-l", "--list", action="store_true",
                           help="list all downloaded mails and quit")
         parser.add_option("--cleanup", action="store_true",
@@ -977,6 +998,15 @@ Be careful when enabling the debug log, passwords will be shown on screen!
                 parser.error("Error parsing token: %s" % token)
 
         return (parser, options, sorted(targets, key=lambda t: t.host))
+
+###############################################################################
+
+class CustomFormatter(optparse.IndentedHelpFormatter):
+    def format_epilog(self, epilog):
+        if epilog:
+            return "\n" + epilog
+        else:
+            return ""
 
 ###############################################################################
 
